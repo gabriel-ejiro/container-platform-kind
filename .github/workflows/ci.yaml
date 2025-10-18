@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   pull_request:
 
+# Needed to read code; Pages perms are set on the deploy job
 permissions:
   contents: read
 
@@ -15,45 +16,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Create a Kubernetes cluster in Docker (KIND)
+      # 1) Create a Kubernetes cluster in Docker (KIND)
       - name: Create KIND cluster
         uses: helm/kind-action@v1
         with:
           cluster_name: portfolio-demo
           node_image: kindest/node:v1.30.0
 
-      # Install NGINX Ingress 
+      # 2) Install NGINX Ingress in KIND for realism
       - name: Install ingress-nginx
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
           kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 
-      # NEW: Install Argo CD
+      # 3) Install Argo CD (fix: controller is a StatefulSet, not a Deployment)
       - name: Install Argo CD
         run: |
           kubectl create namespace argocd || true
           kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-          # Wait for core components so the CRDs/controllers are ready
+          # Wait for core components
           kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=180s
           kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
-          kubectl -n argocd rollout status deploy/argocd-application-controller --timeout=180s
+          kubectl -n argocd rollout status sts/argocd-application-controller --timeout=180s
 
-      # Apply Argo CD root app and capture state
+      # 4) Apply Argo CD root app and capture state
       - name: Apply Argo CD root app and capture state
         run: |
           mkdir -p site
           kubectl apply -f apps/argo/root-app.yaml
-          # give Argo a moment to reconcile
+          # give Argo some time to reconcile
           sleep 20
           kubectl -n argocd get applications -o wide | tee site/argo-apps.txt
 
-      # Deploy workload
+      # 5) Deploy demo workload (keep if Argo root DOES NOT manage demo-web)
       - name: Apply demo app
         run: |
           kubectl apply -f apps/workloads/demo-web/
           kubectl rollout status deploy/demo-web --timeout=120s
 
-      # Smoke-test the Service via port-forward
+      # 6) Smoke-test the Service via port-forward and collect evidence
       - name: Smoke test & collect evidence
         run: |
           mkdir -p site
@@ -79,7 +80,7 @@ jobs:
           curl -sS http://localhost:8080 > site/index.html || true
           kill $PF_PID || true
 
-          # simple landing page (add link to Argo snapshot)
+          # simple landing page linking artifacts
           cat > site/readme.html <<'HTML'
           <!doctype html><meta charset="utf-8">
           <h1>Kubernetes Demo (KIND in GitHub Actions)</h1>
@@ -91,7 +92,7 @@ jobs:
           </ul>
           HTML
 
-      # Upload site as an artifact for the deploy job
+      # 7) Upload site as an artifact for the deploy job
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -100,8 +101,8 @@ jobs:
   deploy:
     needs: build-and-test
     permissions:
-      pages: write
-      id-token: write
+      pages: write      # to deploy to Pages
+      id-token: write   # to authenticate to Pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
