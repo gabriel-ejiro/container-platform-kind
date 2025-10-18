@@ -22,13 +22,32 @@ jobs:
           cluster_name: portfolio-demo
           node_image: kindest/node:v1.30.0
 
-      #  Install NGINX Ingress in KIND for realism
+      # Install NGINX Ingress 
       - name: Install ingress-nginx
         run: |
           kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
           kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s
 
-      #  Deploy workload
+      # NEW: Install Argo CD
+      - name: Install Argo CD
+        run: |
+          kubectl create namespace argocd || true
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          # Wait for core components so the CRDs/controllers are ready
+          kubectl -n argocd rollout status deploy/argocd-repo-server --timeout=180s
+          kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
+          kubectl -n argocd rollout status deploy/argocd-application-controller --timeout=180s
+
+      # Apply Argo CD root app and capture state
+      - name: Apply Argo CD root app and capture state
+        run: |
+          mkdir -p site
+          kubectl apply -f apps/argo/root-app.yaml
+          # give Argo a moment to reconcile
+          sleep 20
+          kubectl -n argocd get applications -o wide | tee site/argo-apps.txt
+
+      # Deploy workload
       - name: Apply demo app
         run: |
           kubectl apply -f apps/workloads/demo-web/
@@ -60,7 +79,7 @@ jobs:
           curl -sS http://localhost:8080 > site/index.html || true
           kill $PF_PID || true
 
-          # simple landing page wrapping the fetched content
+          # simple landing page (add link to Argo snapshot)
           cat > site/readme.html <<'HTML'
           <!doctype html><meta charset="utf-8">
           <h1>Kubernetes Demo (KIND in GitHub Actions)</h1>
@@ -68,6 +87,7 @@ jobs:
           <ul>
             <li><a href="kubectl-summary.txt">kubectl-summary.txt</a> (cluster state)</li>
             <li><a href="index.html">index.html</a> (nginx homepage captured via port-forward)</li>
+            <li><a href="argo-apps.txt">argo-apps.txt</a> (Argo CD Applications snapshot)</li>
           </ul>
           HTML
 
@@ -78,11 +98,10 @@ jobs:
           path: ./site
 
   deploy:
-    # Only run deploy after build-and-test
     needs: build-and-test
     permissions:
-      pages: write      # to deploy to Pages
-      id-token: write   # to authenticate to Pages
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
